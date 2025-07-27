@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UGPhone Cloud</title>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen flex flex-col pb-16">
+  <!-- Banner -->
+  <div class="bg-white shadow p-4">
+    <h1 class="text-2xl font-bold text-blue-600 text-center">UGPhone Cloud</h1>
+    <div class="mt-4">
+      <img src="https://via.placeholder.com/600x300?text=H%C6%B0%E1%BB%9Bng+d%E1%BA%ABn+S%E1%BB%AD+d%E1%BB%A5ng" alt="Hướng dẫn" class="w-full rounded-xl">
+    </div>
+  </div>
+
+  <!-- Đặc điểm nổi bật -->
+  <div class="grid grid-cols-2 gap-4 p-4">
+    <div class="bg-white rounded-xl shadow text-center p-4">
+      <div class="text-3xl">⚡</div>
+      <div class="text-sm font-semibold">Hiệu năng mạnh</div>
+    </div>
+    <div class="bg-white rounded-xl shadow text-center p-4">
+      <div class="text-3xl">🔋</div>
+      <div class="text-sm font-semibold">Không tốn pin</div>
+    </div>
+    <div class="bg-white rounded-xl shadow text-center p-4">
+      <div class="text-3xl">📶</div>
+      <div class="text-sm font-semibold">IP tĩnh</div>
+    </div>
+    <div class="bg-white rounded-xl shadow text-center p-4">
+      <div class="text-3xl">🛡️</div>
+      <div class="text-sm font-semibold">Chống rớt mạng</div>
+    </div>
+  </div>
+
+  <!-- Nút đăng ký / đăng nhập -->
+  <div class="p-4 text-center">
+    <p class="text-sm text-gray-700 mb-2">Bấm vào đây để đăng ký và đăng nhập để nhận gói cloud miễn phí</p>
+    <button onclick="loginWithGoogle()" class="bg-gradient-to-r from-red-500 to-pink-500 text-white px-6 py-2 rounded-full font-bold">🎁 Đi nhận</button>
+  </div>
+
+  <!-- Gói mua cloud -->
+  <div id="cloudPlans" class="p-4 space-y-4">
+    <div class="bg-white rounded-xl p-4 shadow">
+      <h3 class="text-lg font-bold text-blue-600">Gói Pro</h3>
+      <p class="text-sm text-gray-600">Dung lượng: 50GB - 1 thiết bị</p>
+      <p class="text-xl text-blue-500 font-bold">49.000đ</p>
+      <button onclick="activateCloud('Pro', '50GB', '1 thiết bị', '49.000đ')" class="mt-2 px-4 py-2 bg-blue-600 text-white rounded-full">🛒 Đặt mua</button>
+    </div>
+    <div id="adminFreePlan" class="hidden bg-green-50 rounded-xl p-4 shadow">
+      <h3 class="text-lg font-bold text-green-700">Gói Dùng Thử</h3>
+      <p class="text-sm text-gray-600">Dung lượng: 20GB - 1 thiết bị</p>
+      <p class="text-xl text-green-600 font-bold">Miễn phí</p>
+      <button onclick="activateCloud('Dùng thử', '20GB', '1 thiết bị', 'Miễn phí')" class="mt-2 px-4 py-2 bg-green-600 text-white rounded-full">🎁 Nhận miễn phí</button>
+    </div>
+  </div>
+
+  <!-- Thiết bị -->
+  <div id="cloudDevice" class="hidden p-4">
+    <h2 class="text-lg font-bold mb-2">📦 Thiết bị của bạn</h2>
+    <div class="bg-black text-green-400 p-4 rounded-xl font-mono text-sm">
+      🟢 Android S25 ULTRA (Cloud Edition)<br>
+      🧠 Chip: Snapdragon X Elite Gen 1 – 12 cores<br>
+      🧩 RAM: 100GB<br>
+      💽 SSD: 10TB NVMe<br>
+      🌐 IP tĩnh: 203.113.57.199<br>
+      🛡️ Anti-Disconnect: Đã bật<br>
+      ♻️ Treo 24/7: Đang hoạt động<br><br>
+      ✅ Máy Cloud đã sẵn sàng!
+    </div>
+  </div>
+
+  <!-- Tab điều hướng dưới -->
+  <nav class="fixed bottom-0 left-0 right-0 bg-white shadow border-t flex justify-around py-2 text-sm">
+    <button onclick="showTab('device')" class="text-center">📦<br>Thiết bị</button>
+    <button onclick="showTab('plans')" class="text-center">🛒<br>Gói</button>
+    <button onclick="showTab('me')" class="text-center">👤<br>Tôi</button>
+  </nav>
+
+  <!-- Script -->
+  <script>
+    const firebaseConfig = { apiKey: "fake-key", authDomain: "fake.firebaseapp.com" };
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+
+    function loginWithGoogle() {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      auth.signInWithPopup(provider).then(result => {
+        localStorage.setItem('cloudActivated', 'true');
+        localStorage.setItem('userEmail', result.user.email);
+        document.getElementById("cloudDevice").classList.remove("hidden");
+        if (result.user.email === "hongvanphan689@gmail.com") {
+          document.getElementById("adminFreePlan").classList.remove("hidden");
+        }
+        alert("Đăng nhập thành công và đã nhận cloud!");
+      });
+    }
+
+    function activateCloud(plan, storage, devices, price) {
+      localStorage.setItem("cloudActivated", "true");
+      localStorage.setItem("cloudPlan", plan);
+      localStorage.setItem("cloudStorage", storage);
+      localStorage.setItem("cloudDevices", devices);
+      localStorage.setItem("cloudPrice", price);
+      document.getElementById("cloudDevice").classList.remove("hidden");
+    }
+
+    function showTab(tab) {
+      if (tab === 'device') {
+        if (localStorage.getItem("cloudActivated") === "true") {
+          document.getElementById("cloudDevice").classList.remove("hidden");
+        } else {
+          document.getElementById("cloudDevice").classList.add("hidden");
+        }
+      } else if (tab === 'plans') {
+        document.getElementById("cloudPlans").scrollIntoView({ behavior: 'smooth' });
+      } else if (tab === 'me') {
+        alert("Tính năng quản lý tài khoản đang phát triển");
+      }
+    }
+
+    window.onload = () => {
+      if (localStorage.getItem("cloudActivated") === "true") {
+        document.getElementById("cloudDevice").classList.remove("hidden");
+      }
+      if (localStorage.getItem("userEmail") === "hongvanphan689@gmail.com") {
+        document.getElementById("adminFreePlan").classList.remove("hidden");
+      }
+    };
+  </script>
+</body>
+</html>
