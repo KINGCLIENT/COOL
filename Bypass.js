@@ -1,26 +1,14 @@
-// ==UserScript==
-// @name         Time Speed x15 - Hardened (No UI)
-// @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Time x15 + continuous protection + hide traces, kh?ng UI
-// @author       VN Cloud
-// @match        *://*/*
-// @grant        none
-// @run-at       document-start
-// ==/UserScript==
-
 (function () {
     'use strict';
 
     /* ===========================
-       C?u h?nh
+       Cấu hình
        =========================== */
-    let SPEED = 15;         // h? s? m?c ??nh
-    let enabled = true;     // auto b?t
-    const UI_ZINDEX = 2147483647;
+    let SPEED = 15;         // hệ số mặc định
+    let enabled = true;     // auto bật
 
     /* ===========================
-       L?u b?n g?c
+       Lưu bản gốc
        =========================== */
     const originals = {
         Date_now_desc: Object.getOwnPropertyDescriptor(Date, 'now'),
@@ -36,11 +24,11 @@
     /* ===========================
        Helpers
        =========================== */
-    function defineHook(obj, prop, value, allowRestore = true) {
+    function defineHook(obj, prop, value) {
         const desc = {
             value: value,
             writable: false,
-            configurable: !!allowRestore,
+            configurable: true,
             enumerable: false
         };
         try {
@@ -55,16 +43,6 @@
         try {
             if (originalDesc) {
                 Object.defineProperty(obj, prop, originalDesc);
-            } else {
-                if (prop === 'now' && obj === Date && originals.Date_now) {
-                    Object.defineProperty(Date, 'now', { value: originals.Date_now, writable: true, configurable: true });
-                } else if (prop === 'now' && obj === performance && originals.Perf_now) {
-                    Object.defineProperty(performance, 'now', { value: originals.Perf_now, writable: true, configurable: true });
-                } else if (prop === 'setTimeout' && originals.setTimeout) {
-                    Object.defineProperty(window, 'setTimeout', { value: originals.setTimeout, writable: true, configurable: true });
-                } else if (prop === 'setInterval' && originals.setInterval) {
-                    Object.defineProperty(window, 'setInterval', { value: originals.setInterval, writable: true, configurable: true });
-                }
             }
             return true;
         } catch (e) { return false; }
@@ -74,23 +52,59 @@
        Hook / Unhook
        =========================== */
     function hookAll() {
-        defineHook(Date, 'now', function () {
-            try { return Math.floor(originals.Date_now() * SPEED); } catch (e) { return originals.Date_now(); }
-        }, true);
-
+        defineHook(Date, 'now', () => Math.floor(originals.Date_now() * SPEED));
         if (typeof performance !== 'undefined') {
-            defineHook(performance, 'now', function () {
-                try { return (originals.Perf_now ? originals.Perf_now() * SPEED : originals.Date_now() * SPEED); } catch (e) { return (originals.Perf_now ? originals.Perf_now() : originals.Date_now()); }
-            }, true);
+            defineHook(performance, 'now', () => originals.Perf_now ? originals.Perf_now() * SPEED : originals.Date_now() * SPEED);
         }
+        defineHook(window, 'setTimeout', (fn, delay, ...args) =>
+            originals.setTimeout(fn, enabled && typeof delay === 'number' ? delay / SPEED : delay, ...args)
+        );
+        defineHook(window, 'setInterval', (fn, delay, ...args) =>
+            originals.setInterval(fn, enabled && typeof delay === 'number' ? delay / SPEED : delay, ...args)
+        );
+    }
 
-        defineHook(window, 'setTimeout', function (fn, delay, ...args) {
-            const d = (enabled && typeof delay === 'number' && isFinite(delay)) ? (delay / SPEED) : delay;
-            return originals.setTimeout(fn, d, ...args);
-        }, true);
+    /* ===========================
+       Hide traces
+       =========================== */
+    const origFuncToString = Function.prototype.toString;
+    Function.prototype.toString = new Proxy(origFuncToString, {
+        apply(target, thisArg, args) {
+            if ([Date.now, performance.now, window.setTimeout, window.setInterval].includes(thisArg)) {
+                return `function ${thisArg.name || ''}() { [native code] }`;
+            }
+            return Reflect.apply(target, thisArg, args);
+        }
+    });
 
-        defineHook(window, 'setInterval', function (fn, delay, ...args) {
-            const d = (enabled && typeof delay === 'number' && isFinite(delay)) ? (delay / SPEED) : delay;
+    Object.defineProperty(document, 'scripts', {
+        get: function () {
+            return Array.from(this.querySelectorAll('script')).filter(s => !s.src.includes('tampermonkey'));
+        },
+        configurable: true
+    });
+
+    const navProxy = new Proxy(navigator, {
+        get(target, prop) {
+            if (prop === 'plugins') return [];
+            if (prop === 'languages') return target.languages || ['en-US'];
+            return Reflect.get(target, prop);
+        }
+    });
+    Object.defineProperty(window, 'navigator', { get: () => navProxy, configurable: true });
+
+    /* ===========================
+       Observer + Watchers
+       =========================== */
+    const mo = new MutationObserver(() => { if (enabled) hookAll(); });
+    mo.observe(document, { childList: true, subtree: true, attributes: true });
+
+    /* ===========================
+       Auto-enable
+       =========================== */
+    if (enabled) hookAll();
+
+})();ed && typeof delay === 'number' && isFinite(delay)) ? (delay / SPEED) : delay;
             return originals.setInterval(fn, d, ...args);
         }, true);
     }
