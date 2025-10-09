@@ -1,245 +1,1516 @@
-// ==UserScript==
-// @name         Time Speed x15 - Hardened (No UI)
-// @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Time x15 + continuous protection + hide traces, kh?ng UI
-// @author       VN Cloud
-// @match        *://*/*
-// @grant        none
-// @run-at       document-start
-// @sandbox javascript
-// @connect 8.8.8.8
-// ==/UserScript==
-
-(function () {
-    'use strict';
-
-    /* ===========================
-       C?u h?nh
-       =========================== */
-    let SPEED = 15;         // h? s? m?c ??nh
-    let enabled = true;     // auto b?t
-    const UI_ZINDEX = 2147483647;
-
-    /* ===========================
-       L?u b?n g?c
-       =========================== */
-    const originals = {
-        Date_now_desc: Object.getOwnPropertyDescriptor(Date, 'now'),
-        Perf_now_desc: (typeof performance !== 'undefined') ? Object.getOwnPropertyDescriptor(performance, 'now') : undefined,
-        setTimeout_desc: Object.getOwnPropertyDescriptor(window, 'setTimeout'),
-        setInterval_desc: Object.getOwnPropertyDescriptor(window, 'setInterval'),
-        Date_now: Date.now.bind(Date),
-        Perf_now: (typeof performance !== 'undefined') ? performance.now.bind(performance) : null,
-        setTimeout: window.setTimeout.bind(window),
-        setInterval: window.setInterval.bind(window)
-    };
-
-    /* ===========================
-       Helpers
-       =========================== */
-    function defineHook(obj, prop, value, allowRestore = true) {
-        const desc = {
-            value: value,
-            writable: false,
-            configurable: !!allowRestore,
-            enumerable: false
-        };
-        try {
-            Object.defineProperty(obj, prop, desc);
-            return true;
-        } catch (e) {
-            try { obj[prop] = value; return true; } catch (_) { return false; }
-        }
-    }
-
-    function restoreOriginal(obj, prop, originalDesc) {
-        try {
-            if (originalDesc) {
-                Object.defineProperty(obj, prop, originalDesc);
-            } else {
-                if (prop === 'now' && obj === Date && originals.Date_now) {
-                    Object.defineProperty(Date, 'now', { value: originals.Date_now, writable: true, configurable: true });
-                } else if (prop === 'now' && obj === performance && originals.Perf_now) {
-                    Object.defineProperty(performance, 'now', { value: originals.Perf_now, writable: true, configurable: true });
-                } else if (prop === 'setTimeout' && originals.setTimeout) {
-                    Object.defineProperty(window, 'setTimeout', { value: originals.setTimeout, writable: true, configurable: true });
-                } else if (prop === 'setInterval' && originals.setInterval) {
-                    Object.defineProperty(window, 'setInterval', { value: originals.setInterval, writable: true, configurable: true });
-                }
-            }
-            return true;
-        } catch (e) { return false; }
-    }
-
-    /* ===========================
-       Hook / Unhook
-       =========================== */
-    function hookAll() {
-        defineHook(Date, 'now', function () {
-            try { return Math.floor(originals.Date_now() * SPEED); } catch (e) { return originals.Date_now(); }
-        }, true);
-
-        if (typeof performance !== 'undefined') {
-            defineHook(performance, 'now', function () {
-                try { return (originals.Perf_now ? originals.Perf_now() * SPEED : originals.Date_now() * SPEED); } catch (e) { return (originals.Perf_now ? originals.Perf_now() : originals.Date_now()); }
-            }, true);
-        }
-
-        defineHook(window, 'setTimeout', function (fn, delay, ...args) {
-            const d = (enabled && typeof delay === 'number' && isFinite(delay)) ? (delay / SPEED) : delay;
-            return originals.setTimeout(fn, d, ...args);
-        }, true);
-
-        defineHook(window, 'setInterval', function (fn, delay, ...args) {
-            const d = (enabled && typeof delay === 'number' && isFinite(delay)) ? (delay / SPEED) : delay;
-            return originals.setInterval(fn, d, ...args);
-        }, true);
-    }
-
-    function unhookAll() {
-        restoreOriginal(Date, 'now', originals.Date_now_desc);
-        if (typeof performance !== 'undefined') restoreOriginal(performance, 'now', originals.Perf_now_desc);
-        restoreOriginal(window, 'setTimeout', originals.setTimeout_desc);
-        restoreOriginal(window, 'setInterval', originals.setInterval_desc);
-    }
-
-    /* ===========================
-       Hide traces
-       =========================== */
-    const origFuncToString = Function.prototype.toString;
-    try {
-        Function.prototype.toString = new Proxy(origFuncToString, {
-            apply(target, thisArg, args) {
-                try {
-                    if (thisArg === Date.now || thisArg === performance.now || thisArg === window.setTimeout || thisArg === window.setInterval) {
-                        return `function ${thisArg.name || ''}() { [native code] }`;
-                    }
-                } catch (e) {}
-                return Reflect.apply(target, thisArg, args);
-            }
-        });
-    } catch (e) {}
-
-    try {
-        Object.defineProperty(document, 'scripts', {
-            get: function () {
-                const arr = Array.from(this.querySelectorAll('script'));
-                return arr.filter(s => !s.hasAttribute('data-userscript') && !s.src.includes('tampermonkey'));
-            },
-            configurable: true
-        });
-    } catch (e) {}
-
-    try {
-        const navProxy = new Proxy(navigator, {
-            get(target, prop) {
-                if (prop === 'plugins') return [];
-                if (prop === 'languages') return target.languages || ['en-US'];
-                return Reflect.get(target, prop);
-            }
-        });
-        Object.defineProperty(window, 'navigator', { get: () => navProxy, configurable: true });
-    } catch (e) {}
-
-    /* ===========================
-       Observer + Watchers
-       =========================== */
-    const mo = new MutationObserver((mutations) => {
-        if (!enabled) return;
-        let shouldReapply = false;
-        for (const m of mutations) {
-            if (m.addedNodes && m.addedNodes.length) { shouldReapply = true; break; }
-            if (m.type === 'attributes') { shouldReapply = true; break; }
-        }
-        if (shouldReapply) {
-            Promise.resolve().then(() => { try { hookAll(); } catch (e) {} });
-        }
-    });
-
-    function startObserver() {
-        try { mo.observe(document, { childList: true, subtree: true, attributes: true }); } catch (e) {}
-    }
-    function stopObserver() {
-        try { mo.disconnect(); } catch (e) {}
-    }
-
-    const watchProps = [];
-    function watchProp(obj, prop, getterFn) {
-        try {
-            const originalDesc = Object.getOwnPropertyDescriptor(obj, prop);
-            watchProps.push({ obj, prop, originalDesc });
-            Object.defineProperty(obj, prop, {
-                get: getterFn,
-                set: function () { if (enabled) { hookAll(); } },
-                configurable: true,
-                enumerable: false
-            });
-        } catch (e) {}
-    }
-    function unwatchAll() {
-        for (const w of watchProps) {
-            try {
-                if (w.originalDesc) Object.defineProperty(w.obj, w.prop, w.originalDesc);
-                else delete w.obj[w.prop];
-            } catch (e) {}
-        }
-        watchProps.length = 0;
-    }
-
-    /* ===========================
-       Auto-enable
-       =========================== */
-    if (enabled) {
-        hookAll();
-        startObserver();
-        watchProp(window, 'setTimeout', () => window.setTimeout);
-        watchProp(window, 'setInterval', () => window.setInterval);
-        watchProp(Date, 'now', () => Date.now);
-        if (typeof performance !== 'undefined') watchProp(performance, 'now', () => performance.now);
-    }
-
-})();BOGAXNKLm387IwLoekLCSaOTKO9LRk86wa8T1FWdFtxiWZ2e42xZRRYkcK5kxyFqhRlpTfv9/JFhtK3eLJhI2HtMoPS/Y1HAkg2OwEbVMs8g+glmUpJogBPcbxE1fdJFT3YbOLINI6+mJ7sYDsgXhQcRQpa9ia6TOVS2yKZ0CW0+GfhQh0q90acCvD2ewJCmbK6G3jfvzOtSCG1fn3w8MZETaKJk9fPpFsqKFSCqV8NSItuZBoPjvWAMnu79viYJUYkruAenlUKE+kqLr1OdU+gN+BvhDQ6T5UlORTgVpsA4Dg/TlPAFZPpde4JO97O5fJELqJBsfDdlw1eABlD7hzlSaxaam3OOS9iVayEnZMfIloSY588mgT8FZE5qazQg2sqPBINTDrcH4AY8ULRJ8JTEPwTCmb9WlK12fqNMXFeiEK5PcsvLzYP9fdfjDQ8gm5hbtJDV3kuk2rcStnzqimvUzYUXjPnP8gWQ6j/18KaQV+Ob6elnMiDVmNfXXVMLSUqt/aJfFYQ0Jg2iji4NvTy1UYsT/CFRFHZjHvC5vQD6iHdSoBz8up+RhAq2wc7EMUZLyZTISFvH0gI7azGaZ9byL3pnlw46YiSXJL4vYvicbxMb4ND0Fz/ECngxrZE1PmtD8Wj/gN26jhp95hud8OJQTtQFBW2EjqdaJeEsu7ffYH7uQd4o3sFgkumSdgwmah277/WIQxqpkAxlDagb5KKEoOnb+OwCDRplgnKoA9qKIEQ7sE1KRCWK0/FB4wWocEuK4KiAVxnVxFQBOkkq/g618c991YcBCXdZqY1FezsLgo34br15ZNvYkU9vCMLc3IjNKERP4D2EOcFNrHx0h9G1O7RZWBQAfJNN3+OVwtsbXWJCWl+PAtUcyqOV7Zo3Ou1URq3OWYfwwhVS8ixv9Wynl/3RDVpDaYK7Jsf0CeBpAtNQ9QoQBFtiQIGU81R3BuK7FzBgX8TKhbVeIPROMP2T2CyGZfDPn5yfjZRZ4GwMQ5ugcRkHfx6cHtwbpvCJdlu+cNAhywkgvlJm7q6d5pfj4JbmOFklyKJ5vDAIYsAFK5lUUH2GLLBIjqotVoM0ee+YIESFT6MvQVlUfxb5TMYFo+9OB4koyz7RxLfGA311Hf+IzaJUZNxS9/xQIbDfepJfRaNQJLBuuGmdODWP2wz1TLqiIOKqABtR17IZUXU4cFwBkJgntOZ61NWgai1Yfea9p0ri0uqfFbO7Y3qwtH+8K+LfVJICPvyrK4zL/SH/PPYznq5O4igJFnOjlsfWaUTLPkslnNIimxn1sl+dSDlb9YmaIseLUdpOT/I0W+EGmVhwU0I9O1jQ+ef3aBWQNs9mIl9gNYBEsa9ksejj/Grqz4+55Ok9pi9g==";
-  const raw = atob(encoded);
-  const key = atob("Y3UjX2Ywcl9t0b1LeV9fZ2hpVg==");
-  function rc4Bytes(key, data) {
-    const s = [], out = [];
-    let j = 0;
-    for (let i = 0; i < 256; i++) s[i] = i;
-    for (let i = 0; i < 256; i++) {
-      j = (j + s[i] + key.charCodeAt(i % key.length)) % 256;
-      [s[i], s[j]] = [s[j], s[i]];
-    }
-    let i = 0; j = 0;
-    for (let y = 0; y < data.length; y++) {
-      i = (i + 1) % 256;
-      j = (j + s[i]) % 256;
-      [s[i], s[j]] = [s[j], s[i]];
-      const k = s[(s[i] + s[j]) % 256];
-      out.push(data[y] ^ k);
-    }
-    return out;
-  }
-  const rawBytes = Uint8Array.from(raw, c => c.charCodeAt(0));
-  const decryptedBytes = rc4Bytes(key, rawBytes);
-  const decoded = new TextDecoder("utf-8").decode(new Uint8Array(decryptedBytes));
-  Function("GM_setValue", "GM_getValue", decoded)(GM_setValue, GM_getValue);;
-})();et i = 0; i < 256; i++) {
-      j = (j + s[i] + key.charCodeAt(i % key.length)) % 256;
-      [s[i], s[j]] = [s[j], s[i]];
-    }
-    let i = 0; j = 0;
-    for (let y = 0; y < data.length; y++) {
-      i = (i + 1) % 256;
-      j = (j + s[i]) % 256;
-      [s[i], s[j]] = [s[j], s[i]];
-      const k = s[(s[i] + s[j]) % 256];
-      out.push(data[y] ^ k);
-    }
-    return out;
-  }
-  const rawBytes = Uint8Array.from(raw, c => c.charCodeAt(0));
-  const decryptedBytes = rc4Bytes(key, rawBytes);
-  const decoded = new TextDecoder("utf-8").decode(new Uint8Array(decryptedBytes));
-  Function("GM_setValue", "GM_getValue", decoded)(GM_setValue, GM_getValue);;
-})();
+gin.freefiremobile.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+creditappeal.sea.freefiremobile.com
+gamesecurity.us.freefiremobile.com
+gamesecurity.sea.freefiremobile.com
+ff.garena.co.id
+ffsupport.garena.com
+rankguide.freefireindiamobile.com
+rankguide.us.freefiremobile.com
+rankguide.sea.freefiremobile.com
+ffguide.garena.com
+freefire.diamond.170.com.garenanow.grtc.dr.ff.com.garenanow.org
+cocoapods.firebasecore.com
+apple.compilers.llvm.clang.1_0.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+free-fire-8cd39.appspot.com
+free-fire-8cd39.firebaseio.com
+h7xxrov9lb.cloudflare-gateway.com
+com.dts.freefireth.unitywebviewactivity
+com.dts.freefireth
+garena.vn
+hotro.ff.garena.vn
+measurement.com
+app-measurement.com
+gcdsdk.appsflyer.com
+crashlytics.com
+crashlyrics.com
+firebase-settings.crashlytics.com
+skadsdkless.appsflyer.com
+conversions.appsflyer.com
+ffguide.garena.com
+inapps.appsflyer.com
+attr.appsflyer.com
+launches.appsflyer.com
+cdn-settings.appsflyersdk.com
+squadpass.sea.garena.vn
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+akamaihd.net
+garenanow.com
+akamaiedge.net
+garena.com
+hocal.com
+appsflyer.com
+gopapi.io
+akamai.net
+1e100.net
+appsflyersdk.com
+ff.garena.vn
+na-gin.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+ff.dr.grtc.garenanow.com
+listdl.com
+addr.arpa
+catchingnow.com
+analytics.com
+bc.googleusercontent.com
+mcdn.garenanow.com
+sea.freefiremobile.com
+ff.garena.com
+freefiremobile.com
+security-checker.com
+ffim.ff.garena.com
+api-spring2020.ffim.ff.garena.com
+ffmlseason3.ff.garena.com
+api-ffmlseason3.ff.garena.com
+heaven.ff.garena.com
+auctionhouse.ff.garena.com
+api.heaven.ff.garena.com
+midnight.ff.garena.com
+api-midnight.ff.garena.com
+api.anniversary2.ff.garena.com
+api-changefate3.ff.garena.com
+changefate3.ff.garena.com
+api.changefate3.ff.garena.com
+myproxyserver.com
+evice-check.garena.com
+anti-cheat.garena.com
+ip-detection.garena.com
+api.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+checker.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+rslw0r-launches.appsflyersdk.com
+grin.freefiremobile.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+anti-bot.garena.com
+anti-cheat-service.ff-garena.com
+anti-cheat.garena.com
+anticheat.garena.com
+anti-fraud.ff-garena.com
+anti-fraud.garena.com
+anti-fraudulent.garena.com
+anti-hack.garena.com
+audit.garena.com
+auth-check.garena.com
+security.garena.com
+cheat-detection.garena.com
+cheat-monitor.garena.com
+cheat-prevention.ff-garena.com
+cheat-analysis.garena.com
+cheat-detection-service-logs.garena.com
+cheat-detection-monitoring.garena.com
+cheat-prevention-logs.garena.com
+fraud-detection-system.garena.com
+fraud-monitoring-service.garena.com
+game-integrity-logs.garena.com
+exploit-detection.ff-garena.com
+ff-security.garena.com
+telemetry.garena.com
+analytics.garena.com
+activity-log.garena.com
+behavior-analysis.ff-garena.com
+behavioral-analysis-service.ff-garena.com
+cheat-analysis-checks.garena.com
+cheat-analysis-logs.garena.com
+cheat-analysis.garena.com
+cheat-detection-analysis-tool.ff-garena.com
+cheat-detection-analytics.garena.com
+cheat-detection-audit-policy.garena.com
+cheat-detection-audit-reports-tools.garena.com
+cheat-detection-audit-service.garena.com
+cheat-detection-audit-tools.ff-garena.com
+cheat-detection-audit.garena.com
+cheat-detection-checks-analysis-service.garena.com
+cheat-detection-engine.garena.com
+cheat-detection-gateway.ff-garena.com
+cheat-detection-logs-service.garena.com
+cheat-detection-monitoring.garena.com
+cheat-detection-platform-analysis.garena.com
+cheat-detection-platform-reports.garena.com
+cheat-detection-platform-research.garena.com
+cheat-detection-platform.garena.com
+cheat-detection-policy-checks-service.ff-garena.com
+cheat-detection-policy-service.ff-garena.com
+cheat-detection-policy.garena.com
+cheat-detection-reports-audit.ff-garena.com
+cheat-detection-reports-tools-platform.garena.com
+cheat-detection-reports.ff-garena.com
+cheat-detection-reports.garena.com
+cheat-detection-research-analysis.ff-garena.com
+cheat-detection-research-tools.garena.com
+cheat-detection-risk-analysis.garena.com
+cheat-detection-risk-assessment.ff-garena.com
+cheat-detection-risk.garena.com
+cheat-detection-service-logs.garena.com
+cheat-detection-system-checks.garena.com
+cheat-detection-system-logs.garena.com
+cheat-detection-tool.garena.com
+cheat-detection-tools-analysis.garena.com
+cheat-detection-tools-platform.garena.com
+cheat-detection-tools-policy-checks-research.garena.com
+cheat-detection-tools-reports-service.garena.com
+cheat-detection-tools-research-service.garena.com
+cheat-detection-tools-service-logs.ff-garena.com
+cheat-detection-tools-service.garena.com
+cheat-detection.garena.com
+cheat-monitor.garena.com
+cheat-monitoring-logs.ff-garena.com
+cheat-monitoring-service.garena.com
+cheat-monitoring-tool.ff-garena.com
+device-check.garena.com
+data-inspection.garena.com
+data-monitor.garena.com
+data-protection.garena.com
+data-security-checks.ff-garena.com
+data-tracking.garena.com
+data.garena.com
+exploit-detection.ff-garena.com
+fireeye.garena.com
+firewall.garena.com
+fraud-alert.garena.com
+fraud-analysis-logs.ff-garena.com
+fraud-analysis-service.garena.com
+fraud-analysis-tool.ff-garena.com
+fraud-detection-alerts.garena.com
+fraud-detection-analysis-logs.garena.com
+fraud-detection-analysis.ff-garena.com
+fraud-detection-analytics-service.garena.com
+fraud-detection-analytics-tools.garena.com
+fraud-detection-analytics.ff-garena.com
+fraud-detection-checks-analysis.ff-garena.com
+fraud-detection-checks-service.garena.com
+fraud-detection-checks.ff-garena.com
+fraud-detection-gateway.garena.com
+fraud-detection-logs-analysis-service.garena.com
+fraud-detection-logs-platform.garena.com
+fraud-detection-logs-service.ff-garena.com
+fraud-detection-monitor.garena.com
+fraud-detection-monitoring-analysis.ff-garena.com
+fraud-detection-monitoring-tools.garena.com
+fraud-detection-platform-checks.ff-garena.com
+fraud-detection-platform-logs.ff-garena.com
+fraud-detection-platform.ff-garena.com
+fraud-detection-policy-analysis.ff-garena.com
+fraud-detection-policy-checks.garena.com
+fraud-detection-policy-reports.ff-garena.com
+fraud-detection-policy.ff-garena.com
+fraud-detection-reports-service.ff-garena.com
+fraud-detection-reports-tools-service.garena.com
+fraud-detection-reports.ff-garena.com
+fraud-detection-research-checks.garena.com
+fraud-detection-research.ff-garena.com
+fraud-detection-risk-analysis.garena.com
+fraud-detection-risk-platform.garena.com
+fraud-detection-service-logs.ff-garena.com
+fraud-detection-system-analysis.ff-garena.com
+fraud-detection-system-checks.garena.com
+fraud-detection-system-reports.garena.com
+fraud-detection-system.ff-garena.com
+fraud-detection-system.garena.com
+fraud-detection-tool.ff-garena.com
+fraud-detection-tools-analysis-checks.garena.com
+fraud-detection-tools-checks-platform.garena.com
+fraud-detection-tools-checks.garena.com
+fraud-detection-tools-platform-reports.garena.com
+fraud-detection-tools-platform.garena.com
+fraud-detection-tools-reports-checks.ff-garena.com
+fraud-detection-tools-research.ff-garena.com
+fraud-detection-tools.garena.com
+fraud-detection.garena.com
+fraud-monitoring-logs.ff-garena.com
+fraud-monitoring-service.garena.com
+fraud-monitoring.garena.com
+fraud-risk-assessment.ff-garena.com
+fraud-risk-detection.ff-garena.com
+game-integrity-logs.garena.com
+game-integrity.garena.com
+game-security-analysis.garena.com
+game-security-check.ff-garena.com
+game-security-check.garena.com
+hack-detection.garena.com
+hack-detection.ff-garena.com
+hackfinder.garena.com
+ip-detection.garena.com
+login-monitor.garena.com
+network-check.garena.com
+network-monitoring-logs.ff-garena.com
+network-monitoring-service.ff-garena.com
+player-check.garena.com
+player-data.garena.com
+real-time-cheat-detection.ff-garena.com
+real-time-security-audit.ff-garena.com
+real-time-security-monitor.ff-garena.com
+report.garena.com
+security-check.garena.com
+security-checker.garena.com
+system-check.garena.com
+system-integrity.garena.com
+token.garena.com
+telemetry.garena.com
+tracking.garena.com
+usage-check.garena.com
+user-behavior-analysis.ff-garena.com
+validation.garena.com
+integrity-monitoring-system.ff-garena.com
+integrity-monitoring-service.ff-garena.com
+integrity-monitoring-policy.ff-garena.com
+gin.freefiremobile.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+creditappeal.sea.freefiremobile.com
+gamesecurity.us.freefiremobile.com
+gamesecurity.sea.freefiremobile.com
+ff.garena.co.id
+ffsupport.garena.com
+rankguide.freefireindiamobile.com
+rankguide.us.freefiremobile.com
+rankguide.sea.freefiremobile.com
+ffguide.garena.com
+freefire.diamond.170.com
+garenanow.grtc.dr.ff.com.garenanow.org
+cocoapods.firebasecore.com
+apple.compilers.llvm.clang.1_0.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+free-fire-8cd39.appspot.com
+free-fire-8cd39.firebaseio.com
+h7xxrov9lb.cloudflare-gateway.com
+com.dts.freefireth.unitywebviewactivity
+com.dts.freefireth
+garena.vn
+hotro.ff.garena.vn
+measurement.com
+app-measurement.com
+gcdsdk.appsflyer.com
+crashlytics.com
+crashlyrics.com
+firebase-settings.crashlytics.com
+skadsdkless.appsflyer.com
+conversions.appsflyer.com
+ffguide.garena.com
+inapps.appsflyer.com
+attr.appsflyer.com
+launches.appsflyer.com
+cdn-settings.appsflyersdk.com
+squadpass.sea.garena.vn
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+akamaihd.net
+garenanow.com
+akamaiedge.net
+garena.com
+hocal.com
+appsflyer.com
+gopapi.io
+akamai.net
+1e100.net
+appsflyersdk.com
+ff.garena.vn
+na-gin.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+ff.dr.grtc.garenanow.com
+listdl.com
+addr.arpa
+catchingnow.com
+analytics.com
+bc.googleusercontent.com
+mcdn.garenanow.com
+sea.freefiremobile.com
+ff.garena.com
+freefiremobile.com
+security-checker.com
+ffim.ff.garena.com
+api-spring2020.ffim.ff.garena.com
+ffmlseason3.ff.garena.com
+api-ffmlseason3.ff.garena.com
+heaven.ff.garena.com
+auctionhouse.ff.garena.com
+api.heaven.ff.garena.com
+midnight.ff.garena.com
+api-midnight.ff.garena.com
+api.anniversary2.ff.garena.com
+api-changefate3.ff.garena.com
+changefate3.ff.garena.com
+api.changefate3.ff.garena.com
+myproxyserver.com
+evice-check.garena.com
+anti-cheat.garena.com
+ip-detection.garena.com
+api.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+checker.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+rslw0r-launches.appsflyersdk.com
+grin.freefiremobile.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+cheatcheck.freefiremobile.com
+gin.freefiremobile.com
+dl.gmc.freefiremobile.com
+vnnetwork.ggblueshark.com
+vnevent.ggblueshark.com
+ff.dr.grtc.garenanow.com
+dl.dir.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+100067.connect.garena.com
+version.ffmax.purplevioleto.com
+dl.ak.freefiremobile.com
+cheatcheck.freefiremobile.com
+gin.freefiremobile.com
+dl.gmc.freefiremobile.com
+vnnetwork.ggblueshark.com
+vnevent.ggblueshark.com
+ff.dr.grtc.garenanow.com
+dl.dir.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+100067.connect.garena.com
+version.ffmax.purplevioleto.com
+dl.ak.freefiremobile.com
+gin.freefiremobile.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+creditappeal.sea.freefiremobile.com
+gamesecurity.us.freefiremobile.com
+gamesecurity.sea.freefiremobile.com
+ff.garena.co.id
+ffsupport.garena.com
+rankguide.freefireindiamobile.com
+rankguide.us.freefiremobile.com
+rankguide.sea.freefiremobile.com
+ffguide.garena.com
+freefire.diamond.170.com.garenanow.grtc.dr.ff.com.garenanow.org
+cocoapods.firebasecore.com
+apple.compilers.llvm.clang.1_0.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+free-fire-8cd39.appspot.com
+free-fire-8cd39.firebaseio.com
+h7xxrov9lb.cloudflare-gateway.com
+com.dts.freefireth.unitywebviewactivity
+com.dts.freefireth
+garena.vn
+hotro.ff.garena.vn
+measurement.com
+app-measurement.com
+gcdsdk.appsflyer.com
+crashlytics.com
+crashlyrics.com
+firebase-settings.crashlytics.com
+skadsdkless.appsflyer.com
+conversions.appsflyer.com
+ffguide.garena.com
+inapps.appsflyer.com
+attr.appsflyer.com
+launches.appsflyer.com
+cdn-settings.appsflyersdk.com
+squadpass.sea.garena.vn
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+akamaihd.net
+garenanow.com
+akamaiedge.net
+garena.com
+hocal.com
+appsflyer.com
+gopapi.io
+akamai.net
+1e100.net
+appsflyersdk.com
+ff.garena.vn
+na-gin.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+ff.dr.grtc.garenanow.com
+listdl.com
+addr.arpa
+catchingnow.com
+analytics.com
+bc.googleusercontent.com
+mcdn.garenanow.com
+sea.freefiremobile.com
+ff.garena.com
+freefiremobile.com
+security-checker.com
+ffim.ff.garena.com
+api-spring2020.ffim.ff.garena.com
+ffmlseason3.ff.garena.com
+api-ffmlseason3.ff.garena.com
+heaven.ff.garena.com
+auctionhouse.ff.garena.com
+api.heaven.ff.garena.com
+midnight.ff.garena.com
+api-midnight.ff.garena.com
+api.anniversary2.ff.garena.com
+api-changefate3.ff.garena.com
+changefate3.ff.garena.com
+api.changefate3.ff.garena.com
+myproxyserver.com
+evice-check.garena.com
+anti-cheat.garena.com
+ip-detection.garena.com
+api.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+checker.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+rslw0r-launches.appsflyersdk.com
+grin.freefiremobile.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+cheatcheck.freefiremobile.com
+gin.freefiremobile.com
+dl.gmc.freefiremobile.com
+vnnetwork.ggblueshark.com
+vnevent.ggblueshark.com
+ff.dr.grtc.garenanow.com
+dl.dir.freefiremobile.com
+ff.sdk.grtc.garenanow.com
+100067.connect.garena.com
+version.ffmax.purplevioleto.com
+dl.ak.freefiremobile.com
+firebase-settings.crashlytics.com
+content-autofill.googleapis.com
+jncgkt-inapps.appsflyersdk.com
+bdversion.ggbluefox.com
+rslw0r-launches.appsflyersdk.com
+dl.gmc.freefiremobile.com
+rslw0r-inapps.appsflyersdk.com
+loginbp.ggblueshark.com
+dl.dir.freefiremobile.com
+csoversea.stronghold.freefiremobile.com
+dl.castle.freefiremobile.com
+100067.connect.garena.com
+clientbp.ggblueshark.com
+ff.sdk.grtc.garenanow.com
+ff.dr.grtc.garenanow.com
+vnevent.ggblueshark.com
+gin.freefiremobile.com
+vnnetwork.ggblueshark.com
+ffmconnect.live.gop.garenanow.com
+tobapplog.ctobsnssdk.com
+dl-gmc.ggbluefox.com
+support.garena.vn
+garena.net
+ff.support.garena.vn
+login.garena.vn
+msdk.garena.vn
+devmsdk.garena.vn
+devconnect.garena.vn
+astat.bugly.qcloud.com
+login.common.freefiremobile.com
+version.common.ffmax.garena.com
+ind.event.freefiremobile.com
+client.ind.freefiremobile.com
+crashreporter.beetalkmobile.com
+garena-call-of-duty.firebaseio.com
+a1939.w10.akamai.net
+cn.voice.gcloudcs.com
+down.anticheatexpert.com
+ipv6.mainconn.anticheatexpert.com
+reports.crashlytics.com
+sgspeed.igamecj.com
+daohang.qq.com
+freeqqm.qq.com
+lobby-gray.igamecj.com
+lgl.lobby.igamecj.com
+lgl.public.igamecj.com
+mvn.public.igamecj.com
+qun.qq.com
+xinyue.qq.com
+pandora.com
+tencent.com
+helpshift.com
+tdm.qq.com
+voice.gcloudcs.com
+qzone.com
+vpn.jxufe.edu.cn
+my.mobfox.com
+usa.csoversea.mbgame.anticheatexpert.com
+vip.qq.com
+.uic.anticheatexpert.com
+tqos-yun.anticheatexpert.com
+defender.anticheatexpert.com
+intltest.anticheatexpert.com
+intl.anticheatexpert.com
+ctp.anticheatexpert.com
+court.anticheatexpert.com
+dns.qq.com
+ff.anticheatexpert.com
+global.cschannel.anticheatexpert.com
+nj.cschannel.anticheatexpert.com
+downintl.anticheatexpert.com
+tqos.anticheatexpert.com
+cschannel.anticheatexpert.com
+wkchannelone.anticheatexpert.com
+uic-cn.anticheatexpert.com
+1425759855.rsc.cdn77.org
+1009748301.rsc.cdn77.org
+freefire.com
+ff.com
+1671285450.rsc.cdn77.org
+download.2.1945015797.kgvn.gcloud.garena.vn
+version.ffmax.pencilorange.com
+app-analytics-services.com
+store-cfg-gl.heytapmobile.com
+dl-cvs.ggblueshark.com
+att-launches.appsflyersdk.com
+puffer.6.1945015797.kgvn.gcloud.garena.vn
+213.58.112.42.in-addr.arpa
+loginbp.ggblueshark.com
+vnnetwork.ggblueshark.com
+sg.tdatamaster.com
+itop.kg.garena.vn
+speed.kg.garena.vn
+212.58.112.42.in-addr.arpa
+z-m-gateway.facebook.com
+freefireindiamobile.com
+log-upload.garena.com
+sdk-log.garena.com
+config-anti.freefireind.in
+gcdsdk.appsf1.131.142app-measurement.com
+measurement.com
+com.dts.freefireth
+com.dts.freefireth.unitywebviewactivity
+com.googleusercontent.apps.185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m
+free-fire-8cd39.appspot.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+com.garenanow.grtc.dr.ff
+freefire.diamond.170
+rankguide.sea.freefiremo1.131.142rankguide.us.freefiremobile.com
+rankguide.freefireindiamobile.com
+rankguide.freefireindiamobile.com
+skadsdkless.appsflyer.com
+attr.appsflyer.com
+squadpass.sea.garena.vn
+akamaihd.net
+akamaiedge.net
+vn.network.freefiremobile.com
+firebaseinstallations.googlepis.com
+firebase-settings.crashlytics.com
+firebaselogging-pa.googleapis.com
+networkselftest.ff.garena.com
+csoversea.castle.freefiremobile.com
+dl-ind-production.freefiremobile.com
+dl-tata.freefireind.in
+ffmmsdk.live.gop.garenanow.com
+sgevent.ggblueshark.com
+rslw0r-launches.appsflyersdk.com
+gamesecurity.freefireindiamobile.com
+ff.sdk.grtc.garenanow.com
+gcloudcs.com
+dl.tata.freefiremobile.com
+bdversion.ggbluefox.com
+client.common.freefiremobile.com
+launches.appsflyer.com
+dl-sg-production.freefiremobile.com
+inapps.appsflyer.com
+conversions.appsflyer.com
+dl.gcp.freefiremobile.com
+glcs.listdl.com
+cloudctrl.gcloudsdk.com
+intlsdk.iegg.garena.com
+client.us.freefiremobile.com
+version.ffmax.purplevioleto.com
+dl.verus.freefiremobile.com
+dl-us-production.freefiremobile.com
+cdn-settings.appsflyersdk.com
+game.bri
+com.garena.game.ff
+apps.googleusercontent.com
+appspot.com
+firebaseio.comfirebaseio.com
+100067.msdk.garena.com
+100067.connect.garena.com
+test.connect.garena.com
+ggbluefox.com
+recaptcha.garena.com
+devlogs.garena.com
+testlogs.garena.com
+logging.garena.com
+firebaselog.garena.com
+track.garena.com
+feedback.garena.com
+ping.garena.com
+ads.garena.com
+cdn.garena.com
+security.garena.com
+checkin.garena.com
+crashreport.garena.com
+anticheat.codm.garena.com
+banlogs.codm.garena.com
+api.garena.com
+guard.codm.garena.com
+tracking.codm.garena.com
+stats.codm.garena.com
+game-logs.codm.garena.com
+logserver.garena.com
+event.freefiremobile.com
+voice.garena.com
+webrtc.garena.com
+sdkapp.uqee.com
+isdk.garena.com
+client.common.garena.com
+storage.googleapis.com
+hotro.ff.garena.vn
+1e100.net
+akamai.net
+gopapi.io
+listdl.com
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+star.fallback.c10r.facebook.com
+gateway.icloud.com
+www.google.com
+kinesis.us-east-1.amazonaws.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+ffsupport.garena.com
+ff.dr.grtc.garenanow.com
+fcm.googleapis.com
+firebaseio.com
+googleapis.com
+graph.facebook.com
+www.facebook.com
+business.facebook.com
+facebook.net
+googletagmanager.com
+adservice.google.com
+doubleclick.net
+gamesecurity.singapore.freefiremobile.com
+gamesecurity.phlipin.freefiremobile.com
+gamesecurity.eu.freefiremobile.com
+gamesecurity.indonesia.freefiremobile.com
+gamesecurity.br.freefiremobile.com
+gamesecurity.brazil.freefiremobile.com
+gamesecurity.vietnam.freefiremobile.com
+gamesecurity.indo.freefiremobile.com
+gamesecurity.india.freefiremobile.com
+gamesecurity.vn.freefiremobile.com
+gameserver.freefiremobile.com
+data.garena.com
+listdl.garenanow.com
+report-server.garenanow.com
+freefiremobile-a.akamaihd.net
+dl.mobile.gcloud.garena.com
+cdn.ff.garena.com
+static.ff.garena.com
+anticheat.garena.vn
+download.ff.garena.com
+update.ff.garena.com
+event.ff.garena.vn
+topup.garena.vn
+ff.garena.es
+ff.garena.in
+ff.garena.mx
+ff.garena.sg
+ff.garena.com.br
+ff.garena.co.id
+ff.garena.in.th
+api.account.garena.com
+account.ff.garena.com
+static.freefiremobile.com
+ff-sdk-grtc.freefireind.in
+na.gin.freefiremobile.com
+gin.freefireind.in
+aid.ginfreefireind.in
+com.waxmoon.ma.gp
+check.info.garena.com
+freefire.android.com
+garenanow.com
+tracking.garena.com
+voice.freefiremobile.com
+garena.com
+anticheat.garena.sg
+anticheatvn.com
+anticheat-monitor.garena.com
+ban.ff.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+sg-gin.freefiremobile.com
+gin.freefiremobile.com
+playfabapi.com
+sdkconfig.playfabapi.com
+auth.garena.com
+account.garena.com
+login.garena.com
+push.garena.com
+report.garena.com
+youdatacenter.com
+booyahcdn.com
+booyahcdn.live
+booyah.app
+booyah.live
+gw.garenanow.com
+cdn.gm99.com
+cdn.garenanow.com
+dl.ops.garena.com
+ff.garena.tw
+ff.gm99.com
+ff.garena.vn
+ff.garena.com
+freefiremobile.com
+ffmconnect.live.gop.garenanow.com
+tobapplog.ctobsnssdk.com
+dl-gmc.ggbluefox.com
+support.garena.vn
+garena.net
+ff.support.garena.vn
+login.garena.vn
+msdk.garena.vn
+devmsdk.garena.vn
+devconnect.garena.vn
+astat.bugly.qcloud.com
+login.common.freefiremobile.com
+version.common.ffmax.garena.com
+ind.event.freefiremobile.com
+client.ind.freefiremobile.com
+crashreporter.beetalkmobile.com
+garena-call-of-duty.firebaseio.com
+a1939.w10.akamai.net
+cn.voice.gcloudcs.com
+down.anticheatexpert.com
+ipv6.mainconn.anticheatexpert.com
+reports.crashlytics.com
+sgspeed.igamecj.com
+daohang.qq.com
+freeqqm.qq.com
+lobby-gray.igamecj.com
+lgl.lobby.igamecj.com
+lgl.public.igamecj.com
+mvn.public.igamecj.com
+qun.qq.com
+xinyue.qq.com
+pandora.com
+tencent.com
+helpshift.com
+tdm.qq.com
+voice.gcloudcs.com
+qzone.com
+vpn.jxufe.edu.cn
+my.mobfox.com
+usa.csoversea.mbgame.anticheatexpert.com
+vip.qq.com
+.uic.anticheatexpert.com
+tqos-yun.anticheatexpert.com
+defender.anticheatexpert.com
+intltest.anticheatexpert.com
+intl.anticheatexpert.com
+ctp.anticheatexpert.com
+court.anticheatexpert.com
+dns.qq.com
+ff.anticheatexpert.com
+global.cschannel.anticheatexpert.com
+nj.cschannel.anticheatexpert.com
+downintl.anticheatexpert.com
+tqos.anticheatexpert.com
+cschannel.anticheatexpert.com
+wkchannelone.anticheatexpert.com
+uic-cn.anticheatexpert.com
+1425759855.rsc.cdn77.org
+1009748301.rsc.cdn77.org
+freefire.com
+ff.com
+1671285450.rsc.cdn77.org
+download.2.1945015797.kgvn.gcloud.garena.vn
+version.ffmax.pencilorange.com
+app-analytics-services.com
+store-cfg-gl.heytapmobile.com
+dl-cvs.ggblueshark.com
+att-launches.appsflyersdk.com
+puffer.6.1945015797.kgvn.gcloud.garena.vn
+213.58.112.42.in-addr.arpa
+loginbp.ggblueshark.com
+vnnetwork.ggblueshark.com
+sg.tdatamaster.com
+itop.kg.garena.vn
+speed.kg.garena.vn
+212.58.112.42.in-addr.arpa
+z-m-gateway.facebook.com
+freefireindiamobile.com
+log-upload.garena.com
+sdk-log.garena.com
+config-anti.freefireind.in
+gcdsdk.appsflyer.com
+app-measurement.com
+measurement.com
+com.dts.freefireth
+com.dts.freefireth.unitywebviewactivity
+com.googleusercontent.apps.185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m
+free-fire-8cd39.appspot.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+com.garenanow.grtc.dr.ff
+freefire.diamond.170
+rankguide.sea.freefiremobile.com
+rankguide.us.freefiremobile.com
+rankguide.freefireindiamobile.com
+rankguide.freefireindiamobile.com
+skadsdkless.appsflyer.com
+attr.appsflyer.com
+squadpass.sea.garena.vn
+akamaihd.net
+akamaiedge.net
+vn.network.freefiremobile.com
+firebaseinstallations.googlepis.com
+firebase-settings.crashlytics.com
+firebaselogging-pa.googleapis.com
+networkselftest.ff.garena.com
+csoversea.castle.freefiremobile.com
+dl-ind-production.freefiremobile.com
+dl-tata.freefireind.in
+ffmmsdk.live.gop.garenanow.com
+sgevent.ggblueshark.com
+rslw0r-launches.appsflyersdk.com
+gamesecurity.freefireindiamobile.com
+ff.sdk.grtc.garenanow.com
+gcloudcs.com
+dl.tata.freefiremobile.com
+bdversion.ggbluefox.com
+client.common.freefiremobile.com
+launches.appsflyer.com
+dl-sg-production.freefiremobile.com
+inapps.appsflyer.com
+conversions.appsflyer.com
+dl.gcp.freefiremobile.com
+glcs.listdl.com
+cloudctrl.gcloudsdk.com
+intlsdk.iegg.garena.com
+client.us.freefiremobile.com
+version.ffmax.purplevioleto.com
+dl.verus.freefiremobile.com
+dl-us-production.freefiremobile.com
+cdn-settings.appsflyersdk.com
+game.bri
+com.garena.game.ff
+apps.googleusercontent.com
+appspot.com
+firebaseio.comfirebaseio.com
+100067.msdk.garena.com
+100067.connect.garena.com
+test.connect.garena.com
+ggbluefox.com
+recaptcha.garena.com
+devlogs.garena.com
+testlogs.garena.com
+logging.garena.com
+firebaselog.garena.com
+track.garena.com
+feedback.garena.com
+ping.garena.com
+ads.garena.com
+cdn.garena.com
+security.garena.com
+checkin.garena.com
+crashreport.garena.com
+anticheat.codm.garena.com
+banlogs.codm.garena.com
+api.garena.com
+guard.codm.garena.com
+tracking.codm.garena.com
+stats.codm.garena.com
+game-logs.codm.garena.com
+logserver.garena.com
+event.freefiremobile.com
+voice.garena.com
+webrtc.garena.com
+sdkapp.uqee.com
+isdk.garena.com
+client.common.garena.com
+storage.googleapis.com
+hotro.ff.garena.vn
+1e100.net
+akamai.net
+gopapi.io
+listdl.com
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+star.fallback.c10r.facebook.com
+gateway.icloud.com
+www.google.com
+kinesis.us-east-1.amazonaws.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+ffsupport.garena.com
+ff.dr.grtc.garenanow.com
+fcm.googleapis.com
+firebaseio.com
+googleapis.com
+graph.facebook.com
+www.facebook.com
+business.facebook.com
+facebook.net
+googletagmanager.com
+adservice.google.com
+doubleclick.net
+gamesecurity.singapore.freefiremobile.com
+gamesecurity.phlipin.freefiremobile.com
+gamesecurity.eu.freefiremobile.com
+gamesecurity.indonesia.freefiremobile.com
+gamesecurity.br.freefiremobile.com
+gamesecurity.brazil.freefiremobile.com
+gamesecurity.vietnam.freefiremobile.com
+gamesecurity.indo.freefiremobile.com
+gamesecurity.india.freefiremobile.com
+gamesecurity.vn.freefiremobile.com
+gameserver.freefiremobile.com
+data.garena.com
+listdl.garenanow.com
+report-server.garenanow.com
+freefiremobile-a.akamaihd.net
+dl.mobile.gcloud.garena.com
+cdn.ff.garena.com
+static.ff.garena.com
+anticheat.garena.vn
+download.ff.garena.com
+update.ff.garena.com
+event.ff.garena.vn
+topup.garena.vn
+ff.garena.es
+ff.garena.in
+ff.garena.mx
+ff.garena.sg
+ff.garena.com.br
+ff.garena.co.id
+ff.garena.in.th
+api.account.garena.com
+account.ff.garena.com
+static.freefiremobile.com
+ff-sdk-grtc.freefireind.in
+na.gin.freefiremobile.com
+gin.freefireind.in
+aid.ginfreefireind.in
+com.waxmoon.ma.gp
+check.info.garena.com
+freefire.android.com
+garenanow.com
+tracking.garena.com
+voice.freefiremobile.com
+garena.com
+anticheat.garena.sg
+anticheatvn.com
+anticheat-monitor.garena.com
+ban.ff.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+sg-gin.freefiremobile.com
+gin.freefiremobile.com
+playfabapi.com
+sdkconfig.playfabapi.com
+auth.garena.com
+account.garena.com
+login.garena.com
+push.garena.com
+report.garena.com
+youdatacenter.com
+booyahcdn.com
+booyahcdn.live
+booyah.app
+booyah.live
+gw.garenanow.com
+cdn.gm99.com
+cdn.garenanow.com
+dl.ops.garena.com
+ff.garena.tw
+ff.gm99.com
+ff.garena.vn
+ff.garena.com
+freefiremobile.com
+ffmconnect.live.gop.garenanow.com
+tobapplog.ctobsnssdk.com
+dl-gmc.ggbluefox.com
+support.garena.vn
+garena.net
+ff.support.garena.vn
+login.garena.vn
+msdk.garena.vn
+devmsdk.garena.vn
+devconnect.garena.vn
+astat.bugly.qcloud.com
+login.common.freefiremobile.com
+version.common.ffmax.garena.com
+ind.event.freefiremobile.com
+client.ind.freefiremobile.com
+crashreporter.beetalkmobile.com
+garena-call-of-duty.firebaseio.com
+a1939.w10.akamai.net
+cn.voice.gcloudcs.com
+down.anticheatexpert.com
+ipv6.mainconn.anticheatexpert.com
+reports.crashlytics.com
+sgspeed.igamecj.com
+daohang.qq.com
+freeqqm.qq.com
+lobby-gray.igamecj.com
+lgl.lobby.igamecj.com
+lgl.public.igamecj.com
+mvn.public.igamecj.com
+qun.qq.com
+xinyue.qq.com
+pandora.com
+tencent.com
+helpshift.com
+tdm.qq.com
+voice.gcloudcs.com
+qzone.com
+vpn.jxufe.edu.cn
+my.mobfox.com
+usa.csoversea.mbgame.anticheatexpert.com
+vip.qq.com
+.uic.anticheatexpert.com
+tqos-yun.anticheatexpert.com
+defender.anticheatexpert.com
+intltest.anticheatexpert.com
+intl.anticheatexpert.com
+ctp.anticheatexpert.com
+court.anticheatexpert.com
+dns.qq.com
+ff.anticheatexpert.com
+global.cschannel.anticheatexpert.com
+nj.cschannel.anticheatexpert.com
+downintl.anticheatexpert.com
+tqos.anticheatexpert.com
+cschannel.anticheatexpert.com
+wkchannelone.anticheatexpert.com
+uic-cn.anticheatexpert.com
+1425759855.rsc.cdn77.org
+1009748301.rsc.cdn77.org
+freefire.com
+ff.com
+1671285450.rsc.cdn77.org
+download.2.1945015797.kgvn.gcloud.garena.vn
+version.ffmax.pencilorange.com
+app-analytics-services.com
+store-cfg-gl.heytapmobile.com
+dl-cvs.ggblueshark.com
+att-launches.appsflyersdk.com
+puffer.6.1945015797.kgvn.gcloud.garena.vn
+213.58.112.42.in-addr.arpa
+loginbp.ggblueshark.com
+vnnetwork.ggblueshark.com
+sg.tdatamaster.com
+itop.kg.garena.vn
+speed.kg.garena.vn
+212.58.112.42.in-addr.arpa
+z-m-gateway.facebook.com
+freefireindiamobile.com
+log-upload.garena.com
+sdk-log.garena.com
+config-anti.freefireind.in
+gcdsdk.appsflyer.com
+app-measurement.com
+measurement.com
+com.dts.freefireth
+com.dts.freefireth.unitywebviewactivity
+com.googleusercontent.apps.185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m
+free-fire-8cd39.appspot.com
+185753624591-qvie83hnchh8n0nbnq2neheti7r16c5m.apps.googleusercontent.com
+185753624591-uavl56vk7f7ep2cudd1je4lh83orj2hh.apps.googleusercontent.com
+com.garenanow.grtc.dr.ff
+freefire.diamond.170
+rankguide.sea.freefiremobile.com
+rankguide.us.freefiremobile.com
+rankguide.freefireindiamobile.com
+rankguide.freefireindiamobile.com
+skadsdkless.appsflyer.com
+attr.appsflyer.com
+squadpass.sea.garena.vn
+akamaihd.net
+akamaiedge.net
+vn.network.freefiremobile.com
+firebaseinstallations.googlepis.com
+firebase-settings.crashlytics.com
+firebaselogging-pa.googleapis.com
+networkselftest.ff.garena.com
+csoversea.castle.freefiremobile.com
+dl-ind-production.freefiremobile.com
+dl-tata.freefireind.in
+ffmmsdk.live.gop.garenanow.com
+sgevent.ggblueshark.com
+rslw0r-launches.appsflyersdk.com
+gamesecurity.freefireindiamobile.com
+ff.sdk.grtc.garenanow.com
+gcloudcs.com
+dl.tata.freefiremobile.com
+bdversion.ggbluefox.com
+client.common.freefiremobile.com
+launches.appsflyer.com
+dl-sg-production.freefiremobile.com
+inapps.appsflyer.com
+conversions.appsflyer.com
+dl.gcp.freefiremobile.com
+glcs.listdl.com
+cloudctrl.gcloudsdk.com
+intlsdk.iegg.garena.com
+client.us.freefiremobile.com
+version.ffmax.purplevioleto.com
+dl.verus.freefiremobile.com
+dl-us-production.freefiremobile.com
+cdn-settings.appsflyersdk.com
+game.bri
+com.garena.game.ff
+apps.googleusercontent.com
+appspot.com
+firebaseio.comfirebaseio.com
+100067.msdk.garena.com
+100067.connect.garena.com
+test.connect.garena.com
+ggbluefox.com
+recaptcha.garena.com
+devlogs.garena.com
+testlogs.garena.com
+logging.garena.com
+firebaselog.garena.com
+track.garena.com
+feedback.garena.com
+ping.garena.com
+ads.garena.com
+cdn.garena.com
+security.garena.com
+checkin.garena.com
+crashreport.garena.com
+anticheat.codm.garena.com
+banlogs.codm.garena.com
+api.garena.com
+guard.codm.garena.com
+tracking.codm.garena.com
+stats.codm.garena.com
+game-logs.codm.garena.com
+logserver.garena.com
+event.freefiremobile.com
+voice.garena.com
+webrtc.garena.com
+sdkapp.uqee.com
+isdk.garena.com
+client.common.garena.com
+storage.googleapis.com
+hotro.ff.garena.vn
+1e100.net
+akamai.net
+gopapi.io
+listdl.com
+quandoan.ff.garena.vn
+yomost.ff.garena.vn
+star.fallback.c10r.facebook.com
+gateway.icloud.com
+www.google.com
+kinesis.us-east-1.amazonaws.com
+ffarena.championship.garena.com
+creditappeal.ind.freefiremobile.com
+ffsupport.garena.com
+ff.dr.grtc.garenanow.com
+fcm.googleapis.com
+firebaseio.com
+googleapis.com
+graph.facebook.com
+www.facebook.com
+business.facebook.com
+facebook.net
+googletagmanager.com
+adservice.google.com
+doubleclick.net
+gamesecurity.singapore.freefiremobile.com
+gamesecurity.phlipin.freefiremobile.com
+gamesecurity.eu.freefiremobile.com
+gamesecurity.indonesia.freefiremobile.com
+gamesecurity.br.freefiremobile.com
+gamesecurity.brazil.freefiremobile.com
+gamesecurity.vietnam.freefiremobile.com
+gamesecurity.indo.freefiremobile.com
+gamesecurity.india.freefiremobile.com
+gamesecurity.vn.freefiremobile.com
+gameserver.freefiremobile.com
+data.garena.com
+listdl.garenanow.com
+report-server.garenanow.com
+freefiremobile-a.akamaihd.net
+dl.mobile.gcloud.garena.com
+cdn.ff.garena.com
+static.ff.garena.com
+anticheat.garena.vn
+download.ff.garena.com
+update.ff.garena.com
+event.ff.garena.vn
+topup.garena.vn
+ff.garena.es
+ff.garena.in
+ff.garena.mx
+ff.garena.sg
+ff.garena.com.br
+ff.garena.co.id
+ff.garena.in.th
+api.account.garena.com
+account.ff.garena.com
+static.freefiremobile.com
+ff-sdk-grtc.freefireind.in
+na.gin.freefiremobile.com
+gin.freefireind.in
+aid.ginfreefireind.in
+com.waxmoon.ma.gp
+check.info.garena.com
+freefire.android.com
+garenanow.com
+tracking.garena.com
+voice.freefiremobile.com
+garena.com
+anticheat.garena.sg
+anticheatvn.com
+anticheat-monitor.garena.com
+ban.ff.garena.com
+game.garena.com
+anticheat.garena.com
+token.garena.com
+anti.garena.com
+guard.garena.com
+fraudulent.garena.com
+alert.garena.com
+dl.listdl.com
+dl.aw.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.cvs.freefiremobile.com
+cvs.freefiremobile.com
+dl.ctlin.freefiremobile.com
+dl.ctl.freefiremobile.com
+common.freefiremobile.com
+vnevent.ggblueshark.com
+dl.cdn.freefiremobile.com
+dl.castle.freefiremobile.com
+firebaselogging.googleapis.com
+csoversea.stronghold.freefiremobile.com
+dl.dir.freefiremobile.com
+clientbp.ggblueshark.com
+sg-gin.freefiremobile.com
+gin.freefiremobile.com
+playfabapi.com
+sdkconfig.playfabapi.com
+auth.garena.com
+account.garena.com
+login.garena.com
+push.garena.com
+report.garena.com
+youdatacenter.com
+booyahcdn.com
+booyahcdn.live
+booyah.app
+booyah.live
+gw.garenanow.com
+cdn.gm99.com
+cdn.garenanow.com
+dl.ops.garena.com
+ff.garena.tw
+ff.gm99.com
+ff.garena.vn
+ff.garena.com
+freefiremobile.com
+reward.ff.garena.com
+resource.ff.garena.com
+app-analytics-services.com
+www.waxmoon.net
+www.waxmoon.cn
+www.cloner.space
+firebaselogging.googleapis.com
+android-context-data.googleapis.com
+ws-broker.garena.com
+dd.garena.com
+content.garena.com
+dl-ind-production.freefiremobile.com
+freefiremaxsupport.garena.com
+crashreportv3.garena.freefiremobile.com
+crashreportv3.freefiremobile.com
+networkselftest.ff.garena.com
+client.freefiremobile.com
+dl.gmc.freefiremobile.com
+dl.aw.freefiremobile.com
+100069.connect.garena.com
+100068.connect.garena.com
+10003.connect.garena.com
+10002connect.garena.com
+10001.connect.garena.com
+freefiremax.gin.freefiremobile.com
+freefireth.gin.freefiremobile.com
+ffmax.gin.freefiremobile.com
+ffth.gin.freefiremobile.com
+adv.gin.freefiremobile.com
+ff.sdk.grtc.garena.com
+ff.sdk.grtc.garenanow.com
+ff.dr.grtc.garenanow.com
+vnevent.ggblueshark.com
+vnnetwork.ggblueshark.com
+clientbp.ggblueshark.com
+dl.ak.freefiremobile.com
+100067.connect.garena.com
+jncgkt-inapps.appsflyersdk.com
+csoversea.stronghold.freefiremobile.com
+loginbp.ggblueshark.com
+jncgkt-cdn-settings.appsflyersdk.com
+graph.facebook.com
+firebaselogging-pa.googleapis.com
+data.game.freefiremobile.com
+rslw0r-cdn-settings-appsflyersdk.net
+bdversion.ggbluefox.com
+freefiremobile-a.akamaihd.net
+usa.csoversea.mbgame.anticheatexpert.com
+anticheatexpert.com
+cgi.anticheatexpert.com
+act.anticheatexpert.com
+credit.anticheatexpert.com
+dataproxy.anticheatexpert.com
+pokemonunite.anticheatexpert.com
+fakegame.anticheatexpert.com
+ff.garena.com
+garena.com
+garena.vn
+freefiremobile.com
+dl.tata.freefiremobile.com
+dl.dir.freefiremobile.com
+dl.cdn.freefiremobile.com
+gmc.ggbluefox.com
+ffmmsdk.live.gop.garenanow.com
+ffmax.garena.com
+ffm.garena.com
+ff.support.garena.vn
+login.common.freefiremobile.com
+version.common.ffmax.garena.com
+dl.castle.freefiremobile.com
+ind.event.freefiremobile.com
+client.ind.freefiremobile.com
+gamesafe.anticheatexpert.com
+mtp.anticheatexpert.com
+patch.ff.garena.com
+ff.dr.grtc.garenanow.com
+ws-broker.garena.com
+dd.garena.com
+content.garena.com
+crashreportv3.freefiremobile.com
+dl.tata.freefiremobile.com
+gin.dir.freefiremobile.com
+ffmmsdk.live.gop.garenanow.com
+dl-ind-production.freefiremobile.com
+cdn-settings.appsflyersdk.com
+app-measurement.com
+freefiremobile-a.akamaihd.com
+sg-gin.freefiremobile.com
+static.freefiremobile.com
+account.ff.garena.com
+cheat-detection-tools-service.freefiremobile.com
+reward.ff.garena.com
+device-ban.garena.com
+cheat-detection.garena.com
+data-tracking.garena.com
+cheat-prevention.freefiremobile.com
+www.anticheat.garena.com
+data-security-checks.ff-garena.com
+gamesecurity.freefiremobile.com
+mtalk.google.com
+play.googleapis.com
+catch.crashguard.me
+catch6.crashguard.me
+api.crashguard.me
+crashguard.me
+clients2.google.com
+freefiremobile.com
+gin.freefiremobile.com
+version.ffmax.purplevioleto.com
+gin.freefiremobile.com
+BYPASS
+DDOS
+BAN
+KICK
+TIMEOUT
